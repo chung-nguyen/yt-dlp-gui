@@ -35,6 +35,7 @@ def default_settings() -> dict:
         "cookies_browser": "None",
         "overwrite": False,
         "resume": True,
+        "normalize_filenames": True,
     }
 
 

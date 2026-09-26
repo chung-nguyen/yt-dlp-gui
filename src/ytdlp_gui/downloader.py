@@ -18,7 +18,7 @@ from ytdlp_gui.ffmpeg_util import (
     is_hud_compatible,
     probe_media,
 )
-from ytdlp_gui.options import DownloadPlan
+from ytdlp_gui.options import DownloadPlan, normalize_filename
 
 
 @dataclass
@@ -137,6 +137,8 @@ def run_download(plan: DownloadPlan, emit, cancel: threading.Event) -> None:
                 continue
             if plan.hud_recode:
                 path = _ensure_hud(plan, path, emit, cancel)
+            if plan.normalize_filenames:
+                path = _normalize_saved(path, emit)
             written.append(str(path))
         if written:
             emit(UiMessage("log", "Saved:\n" + "\n".join(written)))
@@ -207,6 +209,52 @@ def _ensure_hud(plan: DownloadPlan, source: Path, emit, cancel: threading.Event)
         log_path.unlink(missing_ok=True)
     emit(UiMessage("log", f"Recoded {dest.name}"))
     return dest
+
+
+def normalize_downloaded_file(source: Path) -> Path:
+    """Rename source to its normalized name. Returns the file's new path."""
+    dest_name = normalize_filename(source.name)
+    if dest_name == source.name:
+        return source
+    dest = _available_path(source, source.with_name(dest_name))
+    if _same_file(source, dest):
+        bridge = _available_path(source, source.with_name(f"{source.stem}.rename-tmp{source.suffix}"))
+        source.rename(bridge)
+        bridge.rename(dest)
+        return dest
+    source.rename(dest)
+    return dest
+
+
+def _normalize_saved(path: Path, emit) -> Path:
+    try:
+        renamed = normalize_downloaded_file(path)
+    except OSError as exc:
+        emit(UiMessage("log", f"WARNING: Could not rename {path.name}: {exc}"))
+        return path
+    if renamed.name != path.name:
+        emit(UiMessage("log", f"Renamed {path.name} -> {renamed.name}"))
+    return renamed
+
+
+def _available_path(source: Path, dest: Path) -> Path:
+    if not dest.exists() or _same_file(source, dest):
+        return dest
+    number = 2
+    while True:
+        candidate = dest.with_name(f"{dest.stem} {number}{dest.suffix}")
+        if not candidate.exists() or _same_file(source, candidate):
+            return candidate
+        number += 1
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    if not left.exists() or not right.exists():
+        return False
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
 
 
 def _ffmpeg_binary(ffmpeg_dir: str | None) -> str | None:

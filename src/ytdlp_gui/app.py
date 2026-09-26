@@ -12,7 +12,12 @@ from tkinter import filedialog
 import customtkinter as ctk
 
 from ytdlp_gui.downloader import UiMessage, run_download
-from ytdlp_gui.ffmpeg_util import find_ffmpeg
+from ytdlp_gui.ffmpeg_setup import (
+    FfmpegDownloadCancelled,
+    FfmpegDownloadError,
+    download_latest_ffmpeg,
+)
+from ytdlp_gui.ffmpeg_util import find_ffmpeg, install_dir
 from ytdlp_gui.options import (
     BROWSERS,
     FORMAT_M4A,
@@ -39,6 +44,7 @@ class App(ctk.CTk):
         self._events: queue.Queue[UiMessage] = queue.Queue()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
+        self._ffmpeg_thread: threading.Thread | None = None
         self._loading = True
         self._pulsing = False
 
@@ -51,6 +57,7 @@ class App(ctk.CTk):
         self.cookies_var = tk.StringVar(value=BROWSERS[0])
         self.overwrite_var = tk.BooleanVar(value=False)
         self.resume_var = tk.BooleanVar(value=True)
+        self.normalize_var = tk.BooleanVar(value=True)
 
         self._build()
         self._load_form()
@@ -80,7 +87,13 @@ class App(ctk.CTk):
         self.url_box.bind("<KeyRelease>", self._on_form_change)
 
         self._path_row(3, "Output folder", self.output_var, self._browse_folder)
-        self._path_row(4, "ffmpeg", self.ffmpeg_var, self._browse_ffmpeg)
+        self.get_ffmpeg_button = self._path_row(
+            4,
+            "ffmpeg",
+            self.ffmpeg_var,
+            self._browse_ffmpeg,
+            ("Download ffmpeg", self._download_ffmpeg),
+        )
         self.ffmpeg_status = ctk.CTkLabel(self, text="", anchor="w")
         self.ffmpeg_status.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 6))
 
@@ -105,6 +118,9 @@ class App(ctk.CTk):
         ).pack(side="left", padx=(0, 16))
         ctk.CTkCheckBox(
             checks, text="Resume", variable=self.resume_var, command=self._on_option
+        ).pack(side="left", padx=(0, 16))
+        ctk.CTkCheckBox(
+            checks, text="Normalize names", variable=self.normalize_var, command=self._on_option
         ).pack(side="left")
 
         ctk.CTkLabel(self, text="Command").grid(row=8, column=0, sticky="w", padx=16, pady=(8, 0))
@@ -132,13 +148,19 @@ class App(ctk.CTk):
         self.console.grid(row=12, column=0, sticky="nsew", padx=16, pady=(2, 16))
         _keep_readonly(self.console)
 
-    def _path_row(self, row: int, label: str, variable: tk.StringVar, browse) -> None:
+    def _path_row(self, row: int, label: str, variable: tk.StringVar, browse, extra=None):
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=row, column=0, sticky="ew", padx=16, pady=3)
         frame.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(frame, text=label, width=110, anchor="w").grid(row=0, column=0, sticky="w")
         ctk.CTkEntry(frame, textvariable=variable).grid(row=0, column=1, sticky="ew", padx=8)
         ctk.CTkButton(frame, text="Browse", width=90, command=browse).grid(row=0, column=2)
+        if extra is None:
+            return None
+        text, command = extra
+        button = ctk.CTkButton(frame, text=text, width=150, command=command)
+        button.grid(row=0, column=3, padx=(8, 0))
+        return button
 
     def _combo(self, parent, row: int, column: int, label: str, variable, values, command):
         cell = ctk.CTkFrame(parent, fg_color="transparent")
@@ -162,6 +184,7 @@ class App(ctk.CTk):
         self._set_choice(self.cookies_var, settings.get("cookies_browser"), BROWSERS)
         self.overwrite_var.set(bool(settings.get("overwrite")))
         self.resume_var.set(bool(settings.get("resume", True)))
+        self.normalize_var.set(bool(settings.get("normalize_filenames", True)))
         self._loading = False
         self._sync_quality_state()
         self._refresh_ffmpeg_status()
@@ -182,6 +205,7 @@ class App(ctk.CTk):
             cookies_browser=self.cookies_var.get(),
             overwrite=bool(self.overwrite_var.get()),
             resume=bool(self.resume_var.get()),
+            normalize_filenames=bool(self.normalize_var.get()),
             ffmpeg_location=find_ffmpeg(typed or None),
         )
 
@@ -210,7 +234,11 @@ class App(ctk.CTk):
 
     def _sync_quality_state(self) -> None:
         audio = self.format_var.get() in (FORMAT_MP3, FORMAT_M4A)
-        self.quality_combo.configure(state="disabled" if audio else "readonly")
+        state = "disabled" if audio else "readonly"
+        # CustomTkinter writes a readonly combobox by briefly enabling the entry.
+        # Applying the same state again during that write locks it and drops the value.
+        if self.quality_combo.cget("state") != state:
+            self.quality_combo.configure(state=state)
 
     def _refresh_ffmpeg_status(self) -> None:
         found = find_ffmpeg(self.ffmpeg_var.get().strip() or None)
@@ -244,8 +272,63 @@ class App(ctk.CTk):
         if chosen:
             self.ffmpeg_var.set(chosen)
 
+    def _download_ffmpeg(self) -> None:
+        if self._busy():
+            self._append_log("Wait for the current download to finish.")
+            return
+        self._cancel.clear()
+        self._set_running(True)
+        self.progress.set(0)
+        self.progress_label.configure(text="Downloading ffmpeg...")
+        folder = install_dir() / "ffmpeg"
+        self._append_log(f"Downloading the latest ffmpeg release into {folder}")
+        self._ffmpeg_thread = threading.Thread(target=self._run_ffmpeg_download, daemon=True)
+        self._ffmpeg_thread.start()
+
+    def _run_ffmpeg_download(self) -> None:
+        def report(message: str, percent: float | None) -> None:
+            self._events.put(UiMessage("progress", message, percent=percent))
+
+        try:
+            folder = download_latest_ffmpeg(
+                install_dir(),
+                report=report,
+                cancelled=self._cancel.is_set,
+            )
+        except FfmpegDownloadCancelled:
+            self._events.put(UiMessage("log", "ffmpeg download cancelled."))
+            self._events.put(UiMessage("done", "Cancelled", ok=False))
+            return
+        except FfmpegDownloadError as exc:
+            self._events.put(UiMessage("log", f"ERROR: {exc}"))
+            self._events.put(UiMessage("done", str(exc), ok=False))
+            return
+        except Exception as exc:
+            self._events.put(UiMessage("log", f"ERROR: {exc}"))
+            self._events.put(UiMessage("done", str(exc), ok=False))
+            return
+        self._events.put(UiMessage("ffmpeg", str(folder)))
+        self._events.put(UiMessage("log", f"ffmpeg installed: {folder}"))
+        self._events.put(UiMessage("done", "ffmpeg installed", ok=True))
+
+    def _use_installed_ffmpeg(self, folder: str) -> None:
+        self._loading = True
+        try:
+            self.ffmpeg_var.set(folder)
+        finally:
+            self._loading = False
+        self._save_form()
+        self._refresh_ffmpeg_status()
+        self._refresh_preview()
+
+    def _busy(self) -> bool:
+        return bool(
+            (self._thread and self._thread.is_alive())
+            or (self._ffmpeg_thread and self._ffmpeg_thread.is_alive())
+        )
+
     def _start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._busy():
             return
         request = self._request()
         if not request.urls:
@@ -292,6 +375,9 @@ class App(ctk.CTk):
         if message.kind == "log":
             self._append_log(message.text)
             return
+        if message.kind == "ffmpeg":
+            self._use_installed_ffmpeg(message.text)
+            return
         if message.kind == "progress":
             self.progress_label.configure(text=message.text)
             if message.percent is None:
@@ -307,7 +393,7 @@ class App(ctk.CTk):
             self._stop_pulse()
             if message.ok:
                 self.progress.set(1)
-            self.progress_label.configure(text="Finished" if message.ok else (message.text or "Stopped"))
+            self.progress_label.configure(text=message.text or ("Finished" if message.ok else "Stopped"))
             self._set_running(False)
 
     def _stop_pulse(self) -> None:
@@ -320,6 +406,7 @@ class App(ctk.CTk):
     def _set_running(self, running: bool) -> None:
         self.download_button.configure(state="disabled" if running else "normal")
         self.cancel_button.configure(state="normal" if running else "disabled")
+        self.get_ffmpeg_button.configure(state="disabled" if running else "normal")
 
     def _append_log(self, text: str) -> None:
         if not text:
@@ -340,6 +427,7 @@ class App(ctk.CTk):
             "cookies_browser": self.cookies_var.get(),
             "overwrite": bool(self.overwrite_var.get()),
             "resume": bool(self.resume_var.get()),
+            "normalize_filenames": bool(self.normalize_var.get()),
         }
 
     def _save_form(self) -> None:

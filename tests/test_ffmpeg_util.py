@@ -1,8 +1,10 @@
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from ytdlp_gui.ffmpeg_util import find_ffmpeg, is_hud_compatible
+from ytdlp_gui.ffmpeg_util import find_ffmpeg, install_dir, is_hud_compatible
 
 
 def _media(codec_video="h264", codec_audio="aac", height=360, pix_fmt="yuv420p", container="mov,mp4,m4a,3gp,3g2,mj2"):
@@ -40,6 +42,30 @@ class FfmpegUtilTests(unittest.TestCase):
             (directory / "ffmpeg.exe").write_text("", encoding="utf-8")
             self.assertEqual(find_ffmpeg(str(directory / "ffmpeg.exe")), str(directory))
             self.assertEqual(find_ffmpeg(str(directory)), str(directory))
+
+    def test_install_dir_follows_a_frozen_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "yt-dlp-gui.exe"
+            exe.write_bytes(b"")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(exe)),
+            ):
+                self.assertEqual(install_dir(), exe.parent.resolve())
+
+    def test_folder_beside_the_app_is_used_when_settings_are_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundled = root / "ffmpeg"
+            bundled.mkdir()
+            (bundled / "ffmpeg.exe").write_bytes(b"")
+            other = root / "other"
+            other.mkdir()
+            (other / "ffmpeg.exe").write_bytes(b"")
+            with patch("ytdlp_gui.ffmpeg_util.install_dir", return_value=root):
+                self.assertEqual(find_ffmpeg(None), str(bundled))
+                self.assertEqual(find_ffmpeg(str(other)), str(other))
+                self.assertEqual(find_ffmpeg(str(root / "missing")), str(bundled))
 
 
 if __name__ == "__main__":

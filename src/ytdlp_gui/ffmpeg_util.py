@@ -6,10 +6,32 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-# Used only when ffmpeg is not on PATH. Skipped on machines where it is absent.
+# Used only when ffmpeg is not on PATH and not installed beside the app.
 _EXTRA_CANDIDATES = [Path(r"F:\tools\ffmpeg-8.1-full_build\bin")]
+
+
+def install_dir() -> Path:
+    """Folder the app is installed in.
+
+    Frozen builds use the directory that contains the executable. A source
+    checkout uses the repository root.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    here = Path(__file__).resolve()
+    checkout = here.parents[2]
+    if (checkout / "pyproject.toml").is_file():
+        return checkout
+    return Path(sys.executable).resolve().parent
+
+
+def bundled_ffmpeg_dirs() -> list[Path]:
+    """ffmpeg folder downloaded next to the app, then its bin directory."""
+    root = install_dir() / "ffmpeg"
+    return [root, root / "bin"]
 
 
 def find_ffmpeg(explicit: str | None = None) -> str | None:
@@ -18,6 +40,9 @@ def find_ffmpeg(explicit: str | None = None) -> str | None:
         found = _as_ffmpeg_dir(explicit)
         if found:
             return found
+    for candidate in bundled_ffmpeg_dirs():
+        if _dir_has_ffmpeg(candidate):
+            return str(candidate)
     which = shutil.which("ffmpeg")
     if which:
         return str(Path(which).resolve().parent)

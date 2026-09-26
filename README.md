@@ -2,7 +2,7 @@
 
 A small desktop downloader for Windows, Ubuntu, and macOS. It builds yt-dlp options from a form, runs the download, and shows yt-dlp's log next to the saved files.
 
-Python 3.11 or newer, [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter), and [yt-dlp](https://github.com/yt-dlp/yt-dlp). ffmpeg is **not** bundled. The app looks for it on `PATH` (and one known Windows tools path) so the download folder stays small.
+Python 3.11 or newer, [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter), and [yt-dlp](https://github.com/yt-dlp/yt-dlp). ffmpeg is **not** bundled with the app.
 
 ## Run
 
@@ -27,7 +27,7 @@ pip install -e .
 python -m ytdlp_gui
 ```
 
-Install ffmpeg separately if you want merging or the car-HUD recode. On Windows the app also checks `F:\tools\ffmpeg-8.1-full_build\bin` when ffmpeg is not on `PATH`. You can browse to `ffmpeg` / `ffmpeg.exe` in the window.
+Use **Download ffmpeg** to fetch the latest release into an `ffmpeg` folder next to the app. The ffmpeg field is set to that folder and saved. You can still browse to an existing `ffmpeg` / `ffmpeg.exe`. On Windows the app also checks `PATH` and `F:\tools\ffmpeg-8.1-full_build\bin`.
 
 ## Car HUD preset (Suzuki XL7)
 
@@ -37,7 +37,7 @@ The default preset targets the same **codecs** as a file that already plays on t
 - H.264 (yuv420p), capped at 480p
 - AAC-LC, stereo, 44.1 kHz, 128 kbps
 
-If the site already offers H.264 + AAC inside MP4 at or below the quality cap, the file is kept as-is. Otherwise, when ffmpeg is available, it is recoded to that layout. Filenames stay human-readable (`Title [Artist].mp4`), including spaces and brackets.
+If the site already offers H.264 + AAC inside MP4 at or below the quality cap, the file is kept as-is. Otherwise, when ffmpeg is available, it is recoded to that layout. **Normalize names** is on by default: after download, diacritics and symbols are removed (`Bai hat Artist.mp4`) while spaces stay. Turn it off to keep the original title, including brackets.
 
 Other presets (best quality, 1080p MP4 remux, audio-only) do not recode.
 

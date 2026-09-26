@@ -14,6 +14,7 @@ from ytdlp_gui.options import (
     PRESET_BEST,
     DownloadRequest,
     build_plan,
+    normalize_filename,
     parse_urls,
     preset_defaults,
 )
@@ -188,6 +189,29 @@ class OptionsTests(unittest.TestCase):
         plan = build_plan(DownloadRequest(urls=[], output_dir="/videos"))
         self.assertIn("URL", plan.command_preview.splitlines()[0])
 
+    def test_normalize_filename_drops_diacritics_and_symbols(self):
+        self.assertEqual(normalize_filename("Bài hát [Nghệ sĩ].mp4"), "Bai hat Nghe si.mp4")
+        self.assertEqual(normalize_filename("Đêm mưa.mp3"), "Dem mua.mp3")
+        self.assertEqual(normalize_filename("Café: Live! #1.mkv"), "Cafe Live 1.mkv")
+        self.assertEqual(normalize_filename("Don't Stop.mp4"), "Dont Stop.mp4")
+        self.assertEqual(normalize_filename("A  &  B.webm"), "A B.webm")
+        self.assertEqual(normalize_filename("東京.mp4"), "東京.mp4")
+        self.assertEqual(normalize_filename("!!!.mp4"), "download.mp4")
+        self.assertEqual(normalize_filename("CON.mp4"), "CON file.mp4")
+
+    def test_normalize_names_is_on_by_default(self):
+        plan = build_plan(DownloadRequest(urls=["https://example.com/v"], output_dir="/videos"))
+        self.assertTrue(plan.normalize_filenames)
+        self.assertIn("drop diacritics and symbols", plan.command_preview)
+        plain = build_plan(
+            DownloadRequest(
+                urls=["https://example.com/v"],
+                output_dir="/videos",
+                normalize_filenames=False,
+            )
+        )
+        self.assertNotIn("drop diacritics", plain.command_preview)
+
 
 class SettingsTests(unittest.TestCase):
     def test_default_output_dir_prefers_existing_folder(self):
@@ -209,6 +233,9 @@ class SettingsTests(unittest.TestCase):
             self.assertFalse(loaded["resume"])
             self.assertEqual(loaded["output_dir"], str(Path(tmp)))
             self.assertEqual(loaded["preset"], "Car HUD XL7")
+            self.assertTrue(loaded["normalize_filenames"])
+            save_settings({"normalize_filenames": False}, path)
+            self.assertFalse(load_settings(path)["normalize_filenames"])
 
 
 if __name__ == "__main__":

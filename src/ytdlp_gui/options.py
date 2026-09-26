@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,7 @@ class DownloadRequest:
     cookies_browser: str = "None"
     overwrite: bool = False
     resume: bool = True
+    normalize_filenames: bool = True
     ffmpeg_location: str | None = None
 
 
@@ -65,6 +67,7 @@ class DownloadPlan:
     hud_recode: bool
     max_height: int | None
     output_dir: str
+    normalize_filenames: bool = True
     recode_args: list[str] = field(default_factory=list)
 
 
@@ -192,6 +195,7 @@ def build_plan(request: DownloadRequest) -> DownloadPlan:
         hud_recode=hud_recode,
         max_height=height,
         output_dir=output_dir,
+        normalize_filenames=request.normalize_filenames,
         recode_args=recode_args,
     )
     plan.command_preview = command_preview(plan)
@@ -238,7 +242,64 @@ def command_preview(plan: DownloadPlan) -> str:
             "\n# If the file is not H.264 + AAC in MP4, recode with:\n"
             f"# ffmpeg -y -i INPUT {recode} OUTPUT.mp4"
         )
+    if plan.normalize_filenames:
+        line += "\n# Then rename the file: drop diacritics and symbols"
     return line
+
+
+# Letters that do not decompose under NFKD, but should still lose their mark.
+_LETTER_FIXES = str.maketrans(
+    {
+        "Đ": "D",
+        "đ": "d",
+        "Ł": "L",
+        "ł": "l",
+        "Ø": "O",
+        "ø": "o",
+        "Æ": "AE",
+        "æ": "ae",
+        "Œ": "OE",
+        "œ": "oe",
+        "ß": "ss",
+        "Þ": "Th",
+        "þ": "th",
+        "Ð": "D",
+        "ð": "d",
+        "ı": "i",
+    }
+)
+# Apostrophes sit inside words. Drop them instead of splitting the word.
+_APOSTROPHES = frozenset("'’ʼ`´")
+_WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{n}" for n in range(1, 10)), *(f"lpt{n}" for n in range(1, 10))}
+)
+
+
+def normalize_filename(name: str) -> str:
+    """Keep letters, numbers, and spaces. Drop diacritics and symbols."""
+    suffix = Path(name).suffix
+    stem = name[: -len(suffix)] if suffix else name
+    cleaned = _normalize_stem(stem)
+    if not cleaned or cleaned.casefold() in _WINDOWS_RESERVED:
+        cleaned = f"{cleaned} file".strip() if cleaned else "download"
+    return f"{cleaned}{suffix}"
+
+
+def _normalize_stem(stem: str) -> str:
+    text = unicodedata.normalize("NFKD", stem.translate(_LETTER_FIXES))
+    pieces: list[str] = []
+    for char in text:
+        if unicodedata.combining(char) or char in _APOSTROPHES:
+            continue
+        category = unicodedata.category(char)
+        if category.startswith(("L", "N")):
+            pieces.append(char)
+        else:
+            pieces.append(" ")
+    cleaned = " ".join("".join(pieces).split()).strip(" .")
+    if len(cleaned) > 180:
+        cleaned = cleaned[:180].rstrip(" .")
+    return cleaned
 
 
 def _hud_format(height: int | None) -> str:
